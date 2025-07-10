@@ -1,8 +1,13 @@
 #!/bin/bash
-set -e
+set -euo pipefail
+
+export DEBIAN_FRONTEND=noninteractive
+LOG_FILE="/tmp/linux_bootstrap.log"
+exec > >(tee -a "$LOG_FILE") 2>&1
+trap 'echo "Error on line $LINENO. Check /home/Natan/logs.log"' ERR
 
 if [ "$(id -u)" -ne 0 ]; then
-  echo "Run as root (sudo bash install.sh)"
+  echo "Run as root"
   exit 1
 fi
 
@@ -16,14 +21,12 @@ fi
 
 install_common_packages_debian() {
   apt update && apt upgrade -y
-  apt install -y \
-    curl wget git unzip build-essential software-properties-common \
-    zsh tmux fzf ripgrep bat exa \
-    python3 python3-pip python3-venv \
+  apt install -y linux-headers-$(uname -r) || true
+  apt install -y curl wget git unzip build-essential software-properties-common \
+    zsh tmux fzf ripgrep bat eza || apt install -y exa || true
+  apt install -y python3 python3-pip python3-venv \
     docker.io docker-compose \
-    ansible \
-    ufw fail2ban \
-    jq yq \
+    ansible ufw fail2ban jq yq \
     gnupg lsb-release ca-certificates \
     net-tools htop btop iftop nmap \
     iperf3 dnsutils whois tcpdump \
@@ -32,33 +35,20 @@ install_common_packages_debian() {
 
 install_common_packages_rhel() {
   dnf install -y epel-release
-  dnf install -y \
-    curl wget git unzip make gcc zsh tmux \
+  dnf install -y curl wget git unzip make gcc zsh tmux \
     python3 python3-pip python3-virtualenv \
     docker docker-compose \
-    ansible \
-    firewalld fail2ban \
-    jq \
-    glances htop iftop nmap \
-    ripgrep fzf bat exa \
-    java-17-openjdk \
-    iperf bind-utils whois tcpdump \
-    neovim
+    ansible firewalld fail2ban jq \
+    glances htop iftop nmap ripgrep fzf bat exa \
+    java-17-openjdk iperf bind-utils whois tcpdump neovim
 }
 
 install_common_packages_arch() {
-  pacman -Sy --noconfirm \
-    curl wget git unzip base-devel zsh tmux \
-    python python-pip \
-    docker docker-compose \
-    ansible \
-    ufw fail2ban \
-    jq \
-    glances htop iftop nmap \
-    ripgrep fzf bat exa \
-    jdk-openjdk \
-    iperf dnsutils whois tcpdump \
-    neovim
+  pacman -Sy --noconfirm curl wget git unzip base-devel zsh tmux \
+    python python-pip docker docker-compose \
+    ansible ufw fail2ban jq glances htop iftop nmap \
+    ripgrep fzf bat exa jdk-openjdk \
+    iperf dnsutils whois tcpdump neovim
 }
 
 setup_terraform() {
@@ -113,10 +103,10 @@ setup_vim_for_natan() {
 }
 
 harden_ssh_and_fail2ban() {
-  sed -i 's/^PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
-  systemctl restart sshd || service sshd restart
-  systemctl enable fail2ban
-  systemctl start fail2ban
+  sed -i 's/^PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config || true
+  systemctl restart sshd || service sshd restart || true
+  systemctl enable fail2ban || true
+  systemctl start fail2ban || true
 }
 
 setup_cleanup_cron() {
@@ -195,4 +185,7 @@ harden_ssh_and_fail2ban
 setup_cleanup_cron
 create_help_file
 
-echo "Setup complete... Switch to user 'Natan' and check ~/.help.txt"
+mv "$LOG_FILE" /home/Natan/logs.log
+chown Natan:Natan /home/Natan/logs.log
+
+echo "Installation complete... Reboot"

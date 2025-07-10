@@ -19,6 +19,21 @@ else
   exit 1
 fi
 
+install_docker_compose_rhel() {
+  mkdir -p /usr/local/lib/docker/cli-plugins
+  curl -SL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 \
+    -o /usr/local/lib/docker/cli-plugins/docker-compose
+  chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+}
+
+install_eza_rhel() {
+  curl -LO https://github.com/eza-community/eza/releases/latest/download/eza-x86_64-unknown-linux-gnu.tar.gz
+  tar -xzf eza-x86_64-unknown-linux-gnu.tar.gz
+  mv eza /usr/local/bin/
+  chmod +x /usr/local/bin/eza
+  rm eza-x86_64-unknown-linux-gnu.tar.gz
+}
+
 install_common_packages_debian() {
   apt update && apt upgrade -y
   apt install -y linux-headers-$(uname -r) || true
@@ -37,17 +52,20 @@ install_common_packages_rhel() {
   dnf install -y epel-release
   dnf install -y curl wget git unzip make gcc zsh tmux \
     python3 python3-pip python3-virtualenv \
-    docker docker-compose \
+    docker \
     ansible firewalld fail2ban jq \
-    glances htop iftop nmap ripgrep fzf bat exa \
-    java-17-openjdk iperf bind-utils whois tcpdump neovim
+    glances htop iftop nmap ripgrep fzf bat \
+    java-17-openjdk iperf bind-utils whois tcpdump neovim || true
+
+  install_docker_compose_rhel
+  install_eza_rhel
 }
 
 install_common_packages_arch() {
   pacman -Sy --noconfirm curl wget git unzip base-devel zsh tmux \
     python python-pip docker docker-compose \
     ansible ufw fail2ban jq glances htop iftop nmap \
-    ripgrep fzf bat exa jdk-openjdk \
+    ripgrep fzf bat eza jdk-openjdk \
     iperf dnsutils whois tcpdump neovim
 }
 

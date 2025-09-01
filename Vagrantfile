@@ -11,5 +11,6 @@ Vagrant.configure("2") do |config|
     vb.memory = 16384
   end
 
-  # config.vm.provision "shell", path: "boot.sh"  # Uncomment to run boot.sh script
+  config.vm.provision "shell", path: "boot.sh"  # Uncomment to run boot.sh script to configure the VM
+  config.vm.provision "shell", path: "boot_check.sh", privileged: false  # Uncomment to run boot_check.sh script to verify the VM configuration
 end

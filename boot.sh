@@ -82,11 +82,19 @@ echo "All packages installed successfully."
 # =========================
 # Vim Config
 # =========================
-echo "[*] Writing Vim configuration to ~/.vimrc..."
 
-cat << 'EOF' > ~/.vimrc
+#!/bin/bash
+set -e
+
+echo "[*] Installing system-wide Vim configuration..."
+
+# Ensure the directory exists
+sudo mkdir -p /etc/vim
+
+# Write the config to /etc/vim/vimrc.local
+sudo tee /etc/vim/vimrc.local > /dev/null <<'EOF'
 " =========================
-"   Basic Vim Configuration
+"   System-wide Vim Config
 " =========================
 
 " Enable syntax highlighting
@@ -128,4 +136,9 @@ set scrolloff=5      " Keep 5 lines visible when scrolling
 set signcolumn=yes   " Always show the sign column
 EOF
 
-echo "[*] Vim config installed at ~/.vimrc"
+# Set proper permissions
+sudo chmod 0644 /etc/vim/vimrc.local
+
+echo "[*] System-wide Vim config installed at /etc/vim/vimrc.local"
+echo "Boot sequence completed."
+echo "You may want to run the boot_check.sh script to verify installations."

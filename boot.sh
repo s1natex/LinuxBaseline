@@ -1,216 +1,131 @@
 #!/bin/bash
-# boot.sh — Full DevOps workstation/server setup for Ubuntu 22.04 (Jammy)
-# - Idempotent steps
-# - Per-step PASS/ERROR summary
-# - Detailed logging to /var/log/boot-provision.log
-# - Persistent summary shown at login via /etc/profile.d/
+set -e
 
-### -------- Config --------
-LOG="/var/log/boot-provision.log"
-USER_NAME="natan"
-SUDOERS_FILE="/etc/sudoers.d/${USER_NAME}"
-AUTHORIZED_KEYS_SRC="/home/vagrant/.ssh/authorized_keys"
-AUTHORIZED_KEYS_DST="/home/${USER_NAME}/.ssh/authorized_keys"
-GO_VERSION_DEFAULT="1.23.1"
-K8S_RELEASE_CHANNEL="stable"
-
+echo "Starting boot sequence..."
 export DEBIAN_FRONTEND=noninteractive
-set -o errexit
-set -o nounset
-set -o pipefail
+export DEBCONF_NONINTERACTIVE_SEEN=true
+export APT_LISTCHANGES_FRONTEND=none
 
-### -------- Root escalation --------
-if [ "${EUID:-$(id -u)}" -ne 0 ]; then
-  exec sudo -E bash "$0" "$@"
-fi
+# =========================
+# Preseed common configs
+# =========================
+# Timezone
+sudo ln -fs /usr/share/zoneinfo/Etc/UTC /etc/localtime
+echo "tzdata tzdata/Areas select Etc" | sudo debconf-set-selections
+echo "tzdata tzdata/Zones/Etc select UTC" | sudo debconf-set-selections
 
-### -------- Logging helpers --------
-mkdir -p "$(dirname "$LOG")"
-touch "$LOG"
-chmod 0644 "$LOG"
+# Locale
+echo "locales locales/default_environment_locale select en_US.UTF-8" | sudo debconf-set-selections
+sudo locale-gen en_US.UTF-8
 
-timestamp(){ date +"%Y-%m-%d %H:%M:%S"; }
-log(){ echo "[$(timestamp)] $*" | tee -a "$LOG" >/dev/null; }
+# Suppress GRUB prompts
+echo "grub-pc grub-pc/install_devices_empty boolean true"  | sudo debconf-set-selections
+echo "grub-pc grub-pc/install_devices_failed boolean true" | sudo debconf-set-selections
+echo "grub-pc grub-pc/hidden_timeout boolean true"         | sudo debconf-set-selections
+echo "grub-pc grub-pc/timeout string 0"                    | sudo debconf-set-selections
 
-declare -A STATUS
-pass(){ STATUS["$1"]="PASS"; }
-fail(){ STATUS["$1"]="ERROR - see $LOG"; }
+# =========================
+# Update & Upgrade
+# =========================
+# Prevent interactive kernel/service restart prompts
+sudo apt-get -y purge needrestart update-notifier-common || true
 
-run_step(){
-  local name="$1"; shift
-  log "=== STEP $name: START ==="
-  (
-    set -o errexit -o pipefail
-    "$@"
-  ) >>"$LOG" 2>&1 && { log "=== STEP $name: OK ==="; pass "$name"; } || { rc=$?; log "=== STEP $name: ERROR rc=$rc ==="; fail "$name"; return $rc; }
-}
+sudo apt update -y
 
-### -------- Utilities --------
-apt_quiet_install(){
-  apt-get update -y
-  apt-get install -y --no-install-recommends "$@"
-}
-ensure_group_member(){
-  local user="$1" group="$2"
-  id -nG "$user" | tr ' ' '\n' | grep -qx "$group" || usermod -aG "$group" "$user"
-}
-export -f apt_quiet_install ensure_group_member
+# Fully non-interactive upgrade (handles kernel + config prompts)
+sudo NEEDRESTART_MODE=a apt-get \
+  -o Dpkg::Options::="--force-confdef" \
+  -o Dpkg::Options::="--force-confold" \
+  dist-upgrade -yq
 
-### -------- Steps --------
+# =========================
+# Base Utilities
+# =========================
+sudo apt install -yq \
+  build-essential pkg-config ca-certificates \
+  curl wget gnupg lsb-release apt-transport-https \
+  software-properties-common unzip zip tar gzip xz-utils bzip2 \
+  git vim nano jq tree htop tmux ripgrep fzf \
+  net-tools iproute2 dnsutils nmap tcpdump iputils-ping \
+  ufw fail2ban
 
-run_step "update" bash -c '
-  apt-get update -y
-  apt-get -y upgrade
-  apt-get install -y --no-install-recommends \
-    ca-certificates curl gnupg lsb-release apt-transport-https software-properties-common \
-    unzip zip tar gzip xz-utils bzip2 \
-    build-essential make pkg-config \
-    jq tree htop tmux ripgrep net-tools iproute2 dnsutils nmap tcpdump iputils-ping \
-    git vim openssh-server
-  systemctl enable --now ssh
-'
+sudo systemctl start fail2ban
+sudo systemctl enable fail2ban
 
-run_step "user_create" bash -c '
-  if ! id -u "'"$USER_NAME"'" >/dev/null 2>&1; then
-    adduser --disabled-password --gecos "Natan" "'"$USER_NAME"'"
-  fi
-  echo "'"$USER_NAME"' ALL=(ALL) NOPASSWD:ALL" > "'"$SUDOERS_FILE"'"
-  chmod 0440 "'"$SUDOERS_FILE"'"
-  if [ -f "'"$AUTHORIZED_KEYS_SRC"'" ]; then
-    install -d -m 700 -o "'"$USER_NAME"'" -g "'"$USER_NAME"'" /home/'"$USER_NAME"'/.ssh
-    install -m 600 -o "'"$USER_NAME"'" -g "'"$USER_NAME"'" "'"$AUTHORIZED_KEYS_SRC"'" "'"$AUTHORIZED_KEYS_DST"'"
-  fi
-'
+# =========================
+# Languages & Runtimes
+# =========================
+sudo apt install -yq \
+  python3 python3-pip \
+  openjdk-11-jdk \
+  nodejs npm
 
-run_step "vim_config" bash -c '
-  cat >/etc/vim/vimrc.local <<EOF
-set number
+# =========================
+# Containers & DevOps Tools
+# =========================
+sudo apt install -yq docker.io docker-compose
+sudo systemctl enable --now docker
+
+# Terraform (official repo)
+curl -fsSL https://apt.releases.hashicorp.com/gpg \
+  | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+  | sudo tee /etc/apt/sources.list.d/hashicorp.list > /dev/null
+sudo apt update -y
+sudo apt install -y terraform
+
+# Ansible
+sudo apt install -y ansible
+
+echo "All packages installed successfully."
+
+# =========================
+# Vim Config
+# =========================
+echo "[*] Writing Vim configuration to ~/.vimrc..."
+
+cat << 'EOF' > ~/.vimrc
+" =========================
+"   Basic Vim Configuration
+" =========================
+
+" Enable syntax highlighting
 syntax on
-set mouse=a
-set tabstop=2 shiftwidth=2 expandtab
-set termguicolors
-set background=dark
-EOF
-'
 
-run_step "firewall_fail2ban" bash -c '
-  apt_quiet_install ufw fail2ban
-  ufw status | grep -q "Status: active" || {
-    ufw allow OpenSSH
-    ufw allow 80/tcp
-    ufw allow 443/tcp
-    yes | ufw enable
-  }
-  mkdir -p /etc/fail2ban
-  if [ ! -f /etc/fail2ban/jail.local ]; then
-    cat >/etc/fail2ban/jail.local <<JAIL
-[sshd]
-enabled = true
-bantime = 1h
-findtime = 10m
-maxretry = 5
-JAIL
-  fi
-  systemctl enable --now fail2ban
-'
+" Show absolute and relative line numbers
+set number
+set relativenumber
 
-run_step "docker" bash -c '
-  if ! command -v docker >/dev/null 2>&1; then
-    install -m 0755 -d /etc/apt/keyrings
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-    chmod a+r /etc/apt/keyrings/docker.gpg
-    echo \
-      "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
-      $(. /etc/os-release && echo $VERSION_CODENAME) stable" \
-      > /etc/apt/sources.list.d/docker.list
-    apt-get update -y
-    apt-get install -y --no-install-recommends docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-    systemctl enable --now docker
-  fi
-  ensure_group_member "'"$USER_NAME"'" docker
-'
+" Highlight the current line
+set cursorline
 
-run_step "hashicorp" bash -c '
-  if [ ! -f /etc/apt/sources.list.d/hashicorp.list ]; then
-    curl -fsSL https://apt.releases.hashicorp.com/gpg | gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
-    echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" > /etc/apt/sources.list.d/hashicorp.list
-  fi
-  apt-get update -y
-  apt-get install -y --no-install-recommends terraform vault
-  systemctl disable --now vault || true
-'
+" Highlight matching brackets
+set showmatch
 
-run_step "awscli" bash -c '
-  if ! command -v aws >/dev/null 2>&1; then
-    TMP=$(mktemp -d)
-    pushd "$TMP" >/dev/null
-    curl -fsSLO "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip"
-    unzip -q awscli-exe-linux-x86_64.zip
-    ./aws/install --update
-    popd >/dev/null
-    rm -rf "$TMP"
-  fi
-'
+" Show (partial) command in the last line
+set showcmd
 
-run_step "ansible" bash -c '
-  apt_quiet_install ansible
-'
+" =========================
+"   Indentation & Tabs
+" =========================
+set expandtab        " Use spaces instead of tabs
+set tabstop=2        " Number of spaces that a <Tab> counts for
+set shiftwidth=2     " Number of spaces to use for autoindent
+set shiftround       " Round indent to nearest shiftwidth
+set smartindent      " Smart autoindenting
 
-# (Kubernetes tools, container tools, Python, Go, Nginx, Node.js, CLI QoL omitted here for brevity, keep them from your last script!)
-
-### -------- Final Reminders --------
-run_step "reminders" bash -c '
-  H="/home/'"$USER_NAME"'"
-  mkdir -p "$H/.aws"
-  chown -R '"$USER_NAME"':'"$USER_NAME"' "$H/.aws"
-  CRED="$H/.aws/credentials"
-  CONF="$H/.aws/config"
-  [ -f "$CRED" ] || cat >"$CRED" <<EOF
-[default]
-aws_access_key_id=YOUR_KEY_ID
-aws_secret_access_key=YOUR_SECRET
-EOF
-  [ -f "$CONF" ] || cat >"$CONF" <<EOF
-[default]
-region=eu-central-1
-output=json
-EOF
-  chown '"$USER_NAME"':'"$USER_NAME"' "$CRED" "$CONF"
-  chmod 0600 "$CRED" "$CONF"
-'
-
-### -------- Summary --------
-echo "========== PROVISION SUMMARY =========="
-for step in \
-  update user_create vim_config firewall_fail2ban docker hashicorp awscli ansible \
-  kubernetes_tools container_sec_tools python go nginx nodejs cli_qol k8s_verify reminders
-do
-  state="${STATUS[$step]:-ERROR - see $LOG}"
-  if [ "$state" = "PASS" ]; then
-    echo "$step: PASS"
-  else
-    echo "$step: ERROR - cat $LOG"
-  fi
-done
-echo "======================================="
-
-### -------- Persistent MOTD summary --------
-SUMMARY_SCRIPT="/etc/profile.d/provision-summary.sh"
-
-cat > "$SUMMARY_SCRIPT" <<'EOF'
-#!/bin/bash
-echo ""
-echo "========== PROVISION SUMMARY =========="
-while read -r line; do
-  step=$(echo "$line" | cut -d: -f1)
-  status=$(echo "$line" | cut -d: -f2-)
-  printf "%-20s %s\n" "$step:" "$status"
-done < <(grep -E "=== STEP" /var/log/boot-provision.log | grep -E "OK|ERROR" | sed -E 's/^\[.*\] === STEP ([^:]+): (OK|ERROR.*)/\1:\2/')
-echo "======================================="
-echo "See detailed logs: /var/log/boot-provision.log"
-echo ""
+" =========================
+"   UI Enhancements
+" =========================
+set mouse=a          " Enable mouse support in all modes
+set laststatus=2     " Always show status line
+set hlsearch         " Highlight search results
+set incsearch        " Incremental search
+set ignorecase       " Case-insensitive searching
+set smartcase        " ...unless capital letters are used
+set wrap             " Wrap long lines
+set scrolloff=5      " Keep 5 lines visible when scrolling
+set signcolumn=yes   " Always show the sign column
 EOF
 
-chmod +x "$SUMMARY_SCRIPT"
-
-log "Provisioning completed."
+echo "[*] Vim config installed at ~/.vimrc"
